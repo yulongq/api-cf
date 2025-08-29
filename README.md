@@ -9,10 +9,11 @@
  * This version uses the ES Modules (ESM) format for optimal compatibility with
  * Cloudflare Pages deployment.
  *
- * How to use: (No change in usage)
- * - GEMINI:   https://<your_pages_url>/gemini/...
- * - OPENAI:   https://<your_pages_url>/openai/...
- * - GROQ:     https://<your_pages_url>/groq/...
- * - CLAUDE:   https://<your_pages_url>/claude/...
+ * **How to use:** (No change in usage)
+ * - **GEMINI:**   `https://<your_pages_url>/gemini/...`
+ * - **OPENAI:**   `https://<your_pages_url>/openai/...`
+ * - **GROQ:**     `https://<your_pages_url>/groq/...`
+ * - **CLAUDE:**   `https://<your_pages_url>/claude/...`
  * =================================================================================
  */
+
