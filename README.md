@@ -2,9 +2,9 @@
   workers或者pages部署，只做反代，完全透传，不做任何改动。暂时支持gemini,openai,claude,groq.
 
 
-=================================================================================
+---
 All-in-One AI Gateway Worker
-=================================================================================
+---
 This version uses the ES Modules (ESM) format for optimal compatibility with
 Cloudflare Pages deployment.
 **How to use:** (No change in usage)
@@ -12,7 +12,7 @@ Cloudflare Pages deployment.
 - **OPENAI:**   `https://<your_pages_url>/openai/...`
 - **GROQ:**     `https://<your_pages_url>/groq/...`
 - **CLAUDE:**   `https://<your_pages_url>/claude/...`
-=================================================================================
+---
 
 
 
