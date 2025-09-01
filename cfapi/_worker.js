@@ -6,34 +6,57 @@
  * This version uses the ES Modules (ESM) format for optimal compatibility with
  * Cloudflare Pages deployment.
  *
- * How to use: (No change in usage)
- * - GEMINI:   https://<your_pages_url>/gemini/...
- * - OPENAI:   https://<your_pages_url>/openai/...
- * - GROQ:     https://<your_pages_url>/groq/...
- * - CLAUDE:   https://<your_pages_url>/claude/...
+ * ---------------------------------------------------------------------------------
+ * SUPPORTED SERVICES & USAGE:
+ * ---------------------------------------------------------------------------------
+ *
+ *  - CEREBRAS:
+ *    - Route Key: /cerebras
+ *    - Base URL: https://<your_pages_url>/cerebras
+ *    - Auth: Use `Authorization: Bearer YOUR_CEREBRAS_API_KEY` header.
+ *    - Example: `<your_pages_url>/cerebras/v1/chat/completions`
+ *
+ *  - GEMINI (Google):
+ *    - Route Key: /gemini
+ *    - Base URL: https://<your_pages_url>/gemini
+ *    - Auth: Append `?key=YOUR_GEMINI_API_KEY` to your request URL.
+ *    - Example: `<your_pages_url>/gemini/v1beta/models/gemini-pro:generateContent?key=...`
+ *
+ *  - OPENAI:
+ *    - Route Key: /openai
+ *    - Base URL: https://<your_pages_url>/openai
+ *    - Auth: Use `Authorization: Bearer YOUR_OPENAI_API_KEY` header.
+ *    - Example: `<your_pages_url>/openai/v1/chat/completions`
+ *
+ *  - GROQ:
+ *    - Route Key: /groq
+ *    - Base URL: https://<your_pages_url>/groq
+ *    - Auth: Use `Authorization: Bearer YOUR_GROQ_API_KEY` header.
+ *    - Example: `<your_pages_url>/groq/openai/v1/chat/completions`
+ *
+ *  - CLAUDE (Anthropic):
+ *    - Route Key: /claude
+ *    - Base URL: https://<your_pages_url>/claude
+ *    - Auth: Use `x-api-key: YOUR_CLAUDE_API_KEY` header.
+ *    - Required Header: `anthropic-version: 2023-06-01` (or newer).
+ *    - Example: `<your_pages_url>/claude/v1/messages`
+ *
  * =================================================================================
  */
 
 // --- CONFIGURATION ---
+// Add or modify API routes here.
 const ROUTE_MAP = {
-  "gemini": "generativelanguage.googleapis.com",
-  "openai": "api.openai.com",
-  "groq": "api.groq.com",
+  "cerebras": "api.cerebras.ai",
   "claude": "api.anthropic.com",
+  "gemini": "generativelganguage.googleapis.com",
+  "groq": "api.groq.com",
+  "openai": "api.openai.com",
 };
 
-// --- WORKER LOGIC (Updated to ES Modules format) ---
+// --- WORKER LOGIC (ES Modules format) ---
 export default {
-  /**
-   * The main entry point for the Worker.
-   * @param {Request} request The incoming request.
-   * @param {object} env Environment variables.
-   * @param {object} ctx Execution context.
-   * @returns {Promise<Response>}
-   */
   async fetch(request, env, ctx) {
-    // The core request handling logic is moved into a separate function
-    // for clarity, but it could also be placed directly here.
     return await handleRequest(request);
   }
 };
@@ -80,7 +103,6 @@ async function handleRequest(request) {
 }
 
 // --- HELPER FUNCTIONS (No changes needed here) ---
-
 function applyCorsHeaders(response) {
   response.headers.set('Access-Control-Allow-Origin', '*');
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
@@ -94,4 +116,4 @@ function handleOptions() {
   const response = new Response(null, { status: 204 });
   applyCorsHeaders(response);
   return response;
-}
+}```
