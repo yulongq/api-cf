@@ -116,4 +116,4 @@ function handleOptions() {
   const response = new Response(null, { status: 204 });
   applyCorsHeaders(response);
   return response;
-}```
+}
