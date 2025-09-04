@@ -1,5 +1,7 @@
 # 简易cloudflare反代大陆无法直连的大模型api
   workers或者pages部署，只做反代，完全透传，不做任何改动。暂时支持gemini,openai,claude,groq,cerebras.
+  - (可选)添加Analytics Engine功能，自建一个Analytics Engine的数据库，通过LOGS值来绑定。
+  - 添加缓存。GET类型不缓存，POST类型的非生成图像类请求缓存。
 
 
 ---
