@@ -1,115 +1,206 @@
 /**
  * =================================================================================
- * All-in-One AI Gateway Worker (ESM Format for Cloudflare Pages)
+ * All-in-One AI Gateway Worker with Logging and Intelligent Caching (v4.1)
  * =================================================================================
  *
- * This version uses the ES Modules (ESM) format for optimal compatibility with
- * Cloudflare Pages deployment.
- *
- * ---------------------------------------------------------------------------------
- * SUPPORTED SERVICES & USAGE:
- * ---------------------------------------------------------------------------------
- *
- *  - CEREBRAS:
- *    - Route Key: /cerebras
- *    - Base URL: https://<your_pages_url>/cerebras
- *    - Auth: Use `Authorization: Bearer YOUR_CEREBRAS_API_KEY` header.
- *    - Example: `<your_pages_url>/cerebras/v1/chat/completions`
- *
- *  - GEMINI (Google):
- *    - Route Key: /gemini
- *    - Base URL: https://<your_pages_url>/gemini
- *    - Auth: Append `?key=YOUR_GEMINI_API_KEY` to your request URL.
- *    - Example: `<your_pages_url>/gemini/v1beta/models/gemini-pro:generateContent?key=...`
- *
- *  - OPENAI:
- *    - Route Key: /openai
- *    - Base URL: https://<your_pages_url>/openai
- *    - Auth: Use `Authorization: Bearer YOUR_OPENAI_API_KEY` header.
- *    - Example: `<your_pages_url>/openai/v1/chat/completions`
- *
- *  - GROQ:
- *    - Route Key: /groq
- *    - Base URL: https://<your_pages_url>/groq
- *    - Auth: Use `Authorization: Bearer YOUR_GROQ_API_KEY` header.
- *    - Example: `<your_pages_url>/groq/openai/v1/chat/completions`
- *
- *  - CLAUDE (Anthropic):
- *    - Route Key: /claude
- *    - Base URL: https://<your_pages_url>/claude
- *    - Auth: Use `x-api-key: YOUR_CLAUDE_API_KEY` header.
- *    - Required Header: `anthropic-version: 2023-06-01` (or newer).
- *    - Example: `<your_pages_url>/claude/v1/messages`
+ * This version includes:
+ * - Selective caching for text-based POST requests.
+ * - Expanded non-cacheable list for image generation (OpenAI, Google).
+ * - Guaranteed handling for OpenAI-compatible providers.
+ * - Enhanced logging with cache status ('HIT', 'MISS', 'N/A').
+ * - FIX: Corrected 'SHA-26' to 'SHA-256' in generateCacheKey function.
  *
  * =================================================================================
  */
 
 // --- CONFIGURATION ---
-// Add or modify API routes here.
 const ROUTE_MAP = {
   "cerebras": "api.cerebras.ai",
   "claude": "api.anthropic.com",
-  "gemini": "generativelganguage.googleapis.com",
+  "gemini": "generativelanguage.googleapis.com",
   "groq": "api.groq.com",
   "openai": "api.openai.com",
 };
 
-// --- WORKER LOGIC (ES Modules format) ---
+// --- CACHE CONFIGURATION ---
+const CACHE_TTL_SECONDS = 30 * 60; // 30 minutes
+
+// List of URL paths that should NEVER be cached.
+const NON_CACHEABLE_PATHS = [
+    "/v1/images/generations", // OpenAI DALL-E Image Generation
+];
+
+// List of model name KEYWORDS that should NEVER be cached. Case-insensitive.
+const NON_CACHEABLE_MODELS = [
+    "dall-e",
+    "vision",
+    "image", // Catches gemini-2.0-flash-exp-image-generation
+];
+
+// --- WORKER LOGIC ---
 export default {
   async fetch(request, env, ctx) {
-    return await handleRequest(request);
+    const startTime = Date.now();
+    
+    // We need request data (like model) early for the caching decision.
+    // Clone the request to read its body safely without consuming it.
+    const requestClone = request.clone();
+    const requestData = await extractRequestData(requestClone);
+    
+    // Make the caching decision based on both the request and its extracted data.
+    const isCacheable = isRequestCacheable(request, requestData);
+    
+    let cacheKey;
+    if (isCacheable) {
+      cacheKey = await generateCacheKey(request); // Use original request for key
+      const cache = caches.default;
+      const cachedResponse = await cache.match(cacheKey);
+      
+      if (cachedResponse) {
+        console.log("Cache HIT");
+        const responseWithHeader = new Response(cachedResponse.body, cachedResponse);
+        responseWithHeader.headers.set('X-Cache-Status', 'HIT');
+        ctx.waitUntil(logRequest(env, requestData, responseWithHeader.clone(), startTime));
+        return responseWithHeader;
+      }
+      console.log("Cache MISS");
+    }
+
+    // --- Cache MISS or Non-Cacheable Request ---
+    let response;
+    try {
+      // Forward the ORIGINAL request which still has its body intact.
+      response = await handleRequest(request, requestData.service);
+      
+      const clonedResponse = response.clone();
+      
+      if (isCacheable && response.ok && cacheKey) {
+        const responseToCache = response.clone();
+        responseToCache.headers.set('Cache-Control', `max-age=${CACHE_TTL_SECONDS}`);
+        ctx.waitUntil(caches.default.put(cacheKey, responseToCache));
+        clonedResponse.headers.set('X-Cache-Status', 'MISS');
+      } else {
+        clonedResponse.headers.set('X-Cache-Status', 'N/A');
+      }
+      
+      ctx.waitUntil(logRequest(env, requestData, clonedResponse, startTime));
+      return response;
+
+    } catch (err) {
+      response = new Response(err.message || 'An unexpected error occurred.', { status: 500 });
+      response.headers.set('X-Cache-Status', 'N/A');
+      ctx.waitUntil(logRequest(env, requestData, response.clone(), startTime, err));
+      return response;
+    }
   }
 };
 
-// --- CORE HANDLER (No changes needed inside this function) ---
-async function handleRequest(request) {
-  if (request.method === 'OPTIONS') {
-    return handleOptions();
-  }
-
+// --- CORE HANDLER (No changes needed) ---
+async function handleRequest(request, service) {
+  if (request.method === 'OPTIONS') return handleOptions();
   const url = new URL(request.url);
-  const pathSegments = url.pathname.split('/').filter(Boolean);
-
-  if (pathSegments.length < 1) {
-    return new Response('Invalid request. Please use a path like /gemini/..., /openai/..., etc.', { status: 400 });
-  }
-
-  const routeKey = pathSegments[0];
-  const targetHost = ROUTE_MAP[routeKey];
-
+  const targetHost = ROUTE_MAP[service];
   if (!targetHost) {
     const availableRoutes = Object.keys(ROUTE_MAP).join(', ');
-    return new Response(`Unknown API route: "${routeKey}". Available routes: ${availableRoutes}`, { status: 404 });
+    return new Response(`Unknown API route: "${service}". Available routes: ${availableRoutes}`, { status: 404 });
   }
-
   url.hostname = targetHost;
-  url.pathname = '/' + pathSegments.slice(1).join('/');
-
-  const proxyRequest = new Request(url.toString(), {
-    method: request.method,
-    headers: request.headers,
-    body: request.body,
-    redirect: 'follow',
-  });
-
-  try {
-    const response = await fetch(proxyRequest);
-    const newResponse = new Response(response.body, response);
-    applyCorsHeaders(newResponse);
-    return newResponse;
-  } catch (e) {
-    return new Response('Failed to connect to the upstream API.', { status: 502 });
-  }
+  url.pathname = url.pathname.substring(service.length + 1);
+  const proxyRequest = new Request(url.toString(), { method: request.method, headers: request.headers, body: request.body, redirect: 'follow' });
+  const upstreamResponse = await fetch(proxyRequest);
+  const newResponse = new Response(upstreamResponse.body, upstreamResponse);
+  applyCorsHeaders(newResponse);
+  return newResponse;
 }
 
-// --- HELPER FUNCTIONS (No changes needed here) ---
+// --- LOGGING & DATA EXTRACTION (No changes needed) ---
+async function extractRequestData(request) {
+    const url = new URL(request.url);
+    const pathSegments = url.pathname.split('/').filter(Boolean);
+    const service = pathSegments[0] || 'unknown';
+    let model = 'unknown';
+    try {
+        if (request.method === 'POST') {
+            const body = await request.json();
+            model = body.model || 'unknown';
+        }
+    } catch (e) {}
+    if (service === 'gemini' && pathSegments[3]) {
+        model = pathSegments[3].split(':')[0];
+    }
+    return { service, model };
+}
+
+async function logRequest(env, requestData, response, startTime, error) {
+  if (!env.LOGS) return;
+  const latencyMs = Date.now() - startTime;
+  const cacheStatus = response.headers.get('X-Cache-Status') || 'N/A';
+  const dataPoint = {
+    blobs: [ requestData.service || "unknown", requestData.model || "unknown", error ? error.message : null, cacheStatus ],
+    doubles: [ response.status, latencyMs ],
+  };
+  env.LOGS.writeDataPoint(dataPoint);
+}
+
+// --- UPDATED CACHING HELPERS ---
+
+/**
+ * Determines if a request is eligible for caching based on its method, 
+ * path, and the model specified in its body.
+ * @param {Request} request The incoming request.
+ * @param {object} requestData The extracted data ({service, model}).
+ * @returns {boolean} True if the request can be cached.
+ */
+function isRequestCacheable(request, requestData) {
+  // 1. Only cache POST requests
+  if (request.method !== 'POST') {
+    return false;
+  }
+  
+  // 2. Check against URL path blacklist
+  const url = new URL(request.url);
+  for (const path of NON_CACHEABLE_PATHS) {
+    if (url.pathname.includes(path)) {
+      return false;
+    }
+  }
+
+  // 3. Check against model name keyword blacklist
+  const modelLower = requestData.model.toLowerCase();
+  for (const modelKeyword of NON_CACHEABLE_MODELS) {
+    if (modelLower.includes(modelKeyword)) {
+      return false;
+    }
+  }
+  
+  // If all checks pass, it's cacheable
+  return true;
+}
+
+/**
+ * Generates a unique cache key from the request's URL and body.
+ */
+async function generateCacheKey(request) {
+  const requestClone = request.clone();
+  const body = await requestClone.text();
+  const dataToHash = request.url + body;
+  const encoder = new TextEncoder();
+  const data = encoder.encode(dataToHash);
+  // FIX: Changed 'SHA-26' to 'SHA-256'
+  const digest = await crypto.subtle.digest('SHA-256', data); 
+  const hashArray = Array.from(new Uint8Array(digest));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return new Request(new URL(hashHex, request.url).toString(), {
+    headers: request.headers,
+    method: 'GET',
+  });
+}
+
+// --- STANDARD HELPERS (No changes needed) ---
 function applyCorsHeaders(response) {
   response.headers.set('Access-Control-Allow-Origin', '*');
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  response.headers.set('Access-Control-Allow-Headers', [
-    'Content-Type', 'Authorization', 'x-api-key',
-    'x-goog-api-key', 'anthropic-version', 'openai-organization'
-  ].join(', '));
+  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-goog-api-key, anthropic-version, openai-organization');
 }
 
 function handleOptions() {
