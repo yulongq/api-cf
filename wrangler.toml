@@ -1,0 +1,14 @@
+# Wrangler 配置文件 (位于项目根目录)
+
+# 你的 Worker 的名字，必须和 Cloudflare 仪表盘上的名字完全一样
+name = "api-cf"
+
+# 你的主脚本文件。现在需要包含从根目录开始的完整路径
+main = "cfapi/_worker.js" # <- 这是关键变更！
+
+# 兼容性日期，确保 Worker 运行时环境的稳定性
+compatibility_date = "YYYY-MM-DD"
+
+# 指定这是一个 ES Module 格式的 Worker
+[build]
+command = "" # 我们不需要构建步骤，所以留空
