@@ -12,3 +12,10 @@ compatibility_date = "YYYY-MM-DD"
 # 指定这是一个 ES Module 格式的 Worker
 [build]
 command = "" # 我们不需要构建步骤，所以留空
+[[d1_databases]]
+binding = "DB"                  # 这是您代码中 `env.DB` 的名字，必须保持一致
+database_name = "api-rotation-db" # 数据库的名称
+database_id = "a45713e8-55e5-4cbe-ac82-86954d33a7e6" # <--- 粘贴您复制的数据库 ID
+[[analytics_engine_datasets]]
+binding = "LOGS"                # 这是您代码中 `env.LOGS` 的名字，必须与要求一致
+dataset = "ai_gateway_logs"     # 数据集的名称
