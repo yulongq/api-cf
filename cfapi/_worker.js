@@ -35,6 +35,18 @@ export default {
     let requestData = {};
 
     try {
+      // 验证URL格式
+      const url = new URL(request.url);
+      
+      // 解析路径段
+      const pathSegments = url.pathname.split('/').filter(Boolean);
+      
+      // 检查是否有服务提供商部分，并且该提供商在ROUTE_MAP中配置
+      if (pathSegments.length < 1 || !ROUTE_MAP[pathSegments[0]]) {
+        // URL格式错误，返回错误码625，且不记录到日志
+        return new Response('url格式错误', { status: 625 });
+      }
+
       // Clone the request to safely read the body
       const clonedRequest = request.clone();
       requestData = await extractRequestData(clonedRequest);
@@ -50,7 +62,8 @@ export default {
       return response;
 
     } catch (err) {
-      // In case of an error, create a synthetic error response
+      // 对于URL格式错误，我们已经在前面单独处理并返回，这里处理其他错误
+      // In case of other errors, create a synthetic error response
       response = new Response(err.message || 'An unexpected error occurred.', { status: 500 });
       
       // Asynchronously log the failed request
@@ -69,11 +82,8 @@ async function handleRequest(request, service) {
 
   const url = new URL(request.url);
 
+  // 服务提供商已经在fetch函数中验证过，这里直接获取目标主机
   const targetHost = ROUTE_MAP[service];
-  if (!targetHost) {
-    const availableRoutes = Object.keys(ROUTE_MAP).join(', ');
-    return new Response(`Unknown API route: "${service}". Available routes: ${availableRoutes}`, { status: 404 });
-  }
 
   url.hostname = targetHost;
   url.pathname = url.pathname.substring(service.length + 1); // Removes /service prefix
@@ -136,16 +146,26 @@ async function logRequest(env, requestData, response, startTime, error) {
   }
 
   const latencyMs = Date.now() - startTime;
+  const service = requestData.service || "unknown";
+  const model = requestData.model || "unknown";
+  const errorMessage = error ? error.message : null;
 
   const dataPoint = {
-    blobs: [
-      requestData.service || "unknown", // Service (e.g., openai, claude)
-      requestData.model || "unknown",   // Model name
-      error ? error.message : null,     // Error message if any
+    // 按照要求配置数据点
+    // index1存储服务商
+    indexes: [
+      service
     ],
+    // blob1存储使用服务商，blob2存储模型，blob3存储报错信息
+    blobs: [
+      service,      // blob1: 服务商
+      model,        // blob2: 模型
+      errorMessage  // blob3: 报错信息
+    ],
+    // double1存储状态码，double2存储耗时
     doubles: [
-      response.status, // HTTP Status Code
-      latencyMs,       // Request latency in milliseconds
+      response.status, // double1: HTTP状态码
+      latencyMs        // double2: 耗时（毫秒）
     ],
   };
 
