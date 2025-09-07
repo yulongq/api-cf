@@ -71,17 +71,17 @@ async function getNextKeyIndex(db, service, keysCount) {
     const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据库表名修改
     
     // 使用事务确保原子性，避免并发访问问题
-    return await db.transaction(async (tx) => {
-      // 更新并获取下一个索引
-      const statement = tx.prepare(`
-         INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index)
-         VALUES (?1, 1)
-         ON CONFLICT(service_name) DO UPDATE
-         SET next_index = (next_index + 1) % ?2
-         RETURNING next_index;
-       `).bind(service, keysCount);
-      
-      const { results } = await statement.all();
+    const statements = [
+      db.prepare(`
+        INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index)
+        VALUES (?1, 1)
+        ON CONFLICT(service_name) DO UPDATE
+        SET next_index = (next_index + 1) % ?2
+        RETURNING next_index;
+      `).bind(service, keysCount)
+    ];
+
+    const [{ results }] = await db.batch(statements);
       
       // 确保索引在有效范围内
       const nextIndex = results[0]?.next_index || 1;
