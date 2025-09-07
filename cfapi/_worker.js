@@ -1,16 +1,12 @@
 /**
  * =================================================================================
- * Unified AI Gateway Worker with Enhanced Logging (v9.0)
+ * All-in-One AI Gateway Worker with Analytics Engine Logging
  * =================================================================================
  *
- * New Features in this version:
- * 1.  **Refined Analytics Schema**:
- *     - `blob3` now stores `errorMessage`.
- *     - `blob4` now stores `cacheStatus`.
- * 2.  **Improved Cache Status Logging**: The `cacheStatus` field now uses more descriptive
- *     values: 'HIT', 'MISS', or 'N/A' (for non-cacheable requests).
- * 3.  **Structured Model Logging**: For Intelligent Gateway requests (e.g., model: "openai/gpt-4o"),
- *     the logs will correctly store 'openai' as the service and 'gpt-4o' as the model.
+ * This version integrates with Cloudflare Analytics Engine to log key metrics
+ * for every API request, providing powerful, free observability.
+ *
+ * It requires an Analytics Engine binding named `LOGS`.
  *
  * =================================================================================
  */
@@ -24,233 +20,145 @@ const ROUTE_MAP = {
   "openai": "api.openai.com",
 };
 
-// --- CACHE CONFIGURATION ---
-const CACHE_TTL_SECONDS = 30 * 60;
-const NON_CACHEABLE_PATHS = ["/v1/images/generations"];
-const NON_CACHEABLE_MODELS = ["dall-e", "vision", "image"];
-
-// --- WORKER LOGIC ---
+// --- WORKER LOGIC (ES Modules format) ---
 export default {
+  /**
+   * The main entry point for the Worker.
+   * @param {Request} request The incoming request.
+   * @param {object} env Environment variables, including the LOGS binding.
+   * @param {object} ctx Execution context, used for ctx.waitUntil().
+   * @returns {Promise<Response>}
+   */
   async fetch(request, env, ctx) {
     const startTime = Date.now();
     let response;
-    // NEW: logService/logModel for dedicated logging, cacheStatus defaults to 'N/A'
-    let service, model, requestBody, logService, logModel, cacheStatus = 'N/A', errorMessage = null;
-    let isIntelligentGateway = false;
+    let requestData = {};
 
     try {
-      const url = new URL(request.url);
-      const incomingApiKey = getApiKey(request);
-      let overrideApiKey = null;
+      // Clone the request to safely read the body
+      const clonedRequest = request.clone();
+      requestData = await extractRequestData(clonedRequest);
 
-      // --- Dual-Mode Routing ---
-      if (url.pathname.startsWith('/v1/chat/completions')) {
-        isIntelligentGateway = true;
-        if (!incomingApiKey || incomingApiKey !== env.MASTER_KEY) {
-          throw new ErrorResponse("This endpoint requires a valid Master Key.", 401);
-        }
-        requestBody = await request.clone().json();
-        model = requestBody.model || '';
-        const modelParts = model.split('/');
-        if (modelParts.length < 2 || !ROUTE_MAP[modelParts[0]]) {
-          throw new ErrorResponse(`Invalid model format. Expected 'provider/model_name', received: '${model}'`, 400);
-        }
-        service = modelParts[0];
-        // NEW: Store separated parts for logging
-        logService = service;
-        logModel = modelParts.slice(1).join('/');
-        requestBody.model = logModel; // Rewrite model name for upstream
+      response = await handleRequest(request, requestData.service);
+      
+      // Clone the response to read status, etc., without consuming the body
+      const clonedResponse = response.clone();
+      
+      // Asynchronously log the successful request
+      ctx.waitUntil(logRequest(env, requestData, clonedResponse, startTime));
+      
+      return response;
 
-      } else { // Transparent Gateway
-        const pathSegments = url.pathname.split('/').filter(Boolean);
-        service = pathSegments[0] || 'unknown';
-        try {
-          const tempBody = await request.clone().json();
-          model = tempBody.model || 'unknown';
-        } catch (e) { model = 'unknown'; }
-        // NEW: Assign values for logging
-        logService = service;
-        logModel = model;
-      }
+    } catch (err) {
+      // In case of an error, create a synthetic error response
+      response = new Response(err.message || 'An unexpected error occurred.', { status: 500 });
+      
+      // Asynchronously log the failed request
+      ctx.waitUntil(logRequest(env, requestData, response, startTime, err));
 
-      // --- Key Rotation ---
-      if (env.MASTER_KEY && env.DB && incomingApiKey === env.MASTER_KEY) {
-        overrideApiKey = await getRotatingKeyFromD1(service, env);
-      }
-
-      // --- Universal Caching ---
-      const isCacheable = isRequestCacheable(request, logModel); // Use logModel for check
-      if (isCacheable) {
-        const cacheKey = await generateContentBasedCacheKey(request, isIntelligentGateway ? JSON.stringify(requestBody) : null);
-        const cache = caches.default;
-        const cachedResponse = await cache.match(cacheKey);
-        if (cachedResponse) {
-          cacheStatus = 'HIT';
-          response = new Response(cachedResponse.body, cachedResponse);
-        } else {
-          cacheStatus = 'MISS';
-          response = await handleRequest(request, service, overrideApiKey, isIntelligentGateway, requestBody);
-          if (response.ok) {
-            const responseToCache = response.clone();
-            responseToCache.headers.set('Cache-Control', `max-age=${CACHE_TTL_SECONDS}`);
-            ctx.waitUntil(cache.put(cacheKey, responseToCache));
-          }
-        }
-      } else {
-        // cacheStatus remains 'N/A'
-        response = await handleRequest(request, service, overrideApiKey, isIntelligentGateway, requestBody);
-      }
-
-    } catch (e) {
-      errorMessage = e.message;
-      const status = e instanceof ErrorResponse ? e.status : 500;
-      response = new Response(JSON.stringify({ error: { message: errorMessage } }), { status });
-      logService = service || "unknown";
-      logModel = model || "unknown";
-    } finally {
-      // --- Asynchronous Analytics Logging ---
-      const durationMs = Date.now() - startTime;
-      const logData = {
-        service: logService,
-        model: logModel,
-        cacheStatus,
-        statusCode: response.status,
-        durationMs,
-        errorMessage,
-      };
-      ctx.waitUntil(logToAnalyticsEngine(env, logData));
+      return response;
     }
-
-    return response;
   }
 };
 
-// --- NEW: Custom Error Class for better status code handling ---
-class ErrorResponse extends Error {
-  constructor(message, status) {
-    super(message);
-    this.status = status;
+// --- CORE HANDLER ---
+async function handleRequest(request, service) {
+  if (request.method === 'OPTIONS') {
+    return handleOptions();
   }
+
+  const url = new URL(request.url);
+
+  const targetHost = ROUTE_MAP[service];
+  if (!targetHost) {
+    const availableRoutes = Object.keys(ROUTE_MAP).join(', ');
+    return new Response(`Unknown API route: "${service}". Available routes: ${availableRoutes}`, { status: 404 });
+  }
+
+  url.hostname = targetHost;
+  url.pathname = url.pathname.substring(service.length + 1); // Removes /service prefix
+
+  const proxyRequest = new Request(url.toString(), {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    redirect: 'follow',
+  });
+
+  const upstreamResponse = await fetch(proxyRequest);
+  const newResponse = new Response(upstreamResponse.body, upstreamResponse);
+  applyCorsHeaders(newResponse);
+  return newResponse;
 }
 
 /**
- * --- MODIFIED: Analytics Engine Logging Function ---
- * Swapped blob3 and blob4 to match new schema.
+ * Extracts key information from the incoming request.
+ * @param {Request} request
+ * @returns {Promise<object>}
  */
-async function logToAnalyticsEngine(env, data) {
+async function extractRequestData(request) {
+    const url = new URL(request.url);
+    const pathSegments = url.pathname.split('/').filter(Boolean);
+    const service = pathSegments[0] || 'unknown';
+    let model = 'unknown';
+
+    try {
+        if (request.method === 'POST') {
+            const body = await request.json();
+            model = body.model || 'unknown';
+        }
+    } catch (e) {
+        // Ignore if body is not JSON or empty
+    }
+    
+    // For Gemini, model is in the URL, e.g., /gemini/v1beta/models/gemini-pro:generateContent
+    if (service === 'gemini' && pathSegments[3]) {
+        model = pathSegments[3].split(':')[0];
+    }
+    
+    return { service, model };
+}
+
+
+/**
+ * Asynchronously logs data to the Analytics Engine.
+ * @param {object} env - The environment object containing bindings.
+ * @param {object} requestData - Data extracted from the request {service, model}.
+ * @param {Response} response - The final response object.
+ * @param {number} startTime - The timestamp when the request started.
+ * @param {Error} [error] - An optional error object if the request failed.
+ */
+async function logRequest(env, requestData, response, startTime, error) {
+  // If the LOGS binding doesn't exist, do nothing.
   if (!env.LOGS) {
     console.log("Analytics Engine binding 'LOGS' not found. Skipping logging.");
     return;
   }
 
-  env.LOGS.writeDataPoint({
+  const latencyMs = Date.now() - startTime;
+
+  const dataPoint = {
     blobs: [
-      data.service || "unknown",
-      data.model || "unknown",
-      data.errorMessage || "",       // MODIFIED: blob3 is now errorMessage
-      data.cacheStatus || "unknown", // MODIFIED: blob4 is now cacheStatus
+      requestData.service || "unknown", // Service (e.g., openai, claude)
+      requestData.model || "unknown",   // Model name
+      error ? error.message : null,     // Error message if any
     ],
     doubles: [
-      data.statusCode || 500,
-      data.durationMs || 0,
+      response.status, // HTTP Status Code
+      latencyMs,       // Request latency in milliseconds
     ],
-    indexes: [
-      data.service || "unknown",
-    ],
-  });
+  };
+
+  // Write the data point to the Analytics Engine
+  env.LOGS.writeDataPoint(dataPoint);
 }
 
-// --- UNCHANGED OR MINIMALLY CHANGED HELPER FUNCTIONS ---
 
-async function handleRequest(request, service, overrideApiKey, isIntelligentGateway, modifiedBody) {
-  if (request.method === 'OPTIONS') return handleOptions();
-
-  const url = new URL(request.url);
-  const targetHost = ROUTE_MAP[service];
-  if (!targetHost) throw new ErrorResponse(`Unknown service provider: "${service}".`, 404);
-
-  url.hostname = targetHost;
-  url.pathname = isIntelligentGateway ? '/v1/chat/completions' : url.pathname.substring(service.length + 1);
-
-  const newHeaders = new Headers(request.headers);
-  if (overrideApiKey) {
-    if (service === 'gemini') {
-      url.searchParams.set('key', overrideApiKey);
-      newHeaders.delete('Authorization');
-      newHeaders.delete('x-goog-api-key');
-    } else {
-      newHeaders.set('Authorization', `Bearer ${overrideApiKey}`);
-    }
-  }
-
-  const body = isIntelligentGateway ? JSON.stringify(modifiedBody) : request.body;
-  if(isIntelligentGateway) newHeaders.set('Content-Type', 'application/json');
-
-  const proxyRequest = new Request(url.toString(), {
-    method: request.method,
-    headers: newHeaders,
-    body: body,
-    redirect: 'follow'
-  });
-
-  const upstreamResponse = await fetch(proxyRequest);
-  const response = new Response(upstreamResponse.body, upstreamResponse);
-  applyCorsHeaders(response);
-  return response;
-}
-
+// --- HELPER FUNCTIONS ---
 function applyCorsHeaders(response) {
-    response.headers.set('Access-Control-Allow-Origin', '*');
-    response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-goog-api-key, anthropic-version, openai-organization');
-}
-
-async function generateContentBasedCacheKey(request, bodyOverride) {
-  const body = bodyOverride ? bodyOverride : await request.clone().text();
-  const dataToHash = request.url + request.method + body;
-  const encoder = new TextEncoder();
-  const data = encoder.encode(dataToHash);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(digest));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  return new Request(`https://cache.internal/${hashHex}`, { method: 'GET' });
-}
-
-async function getRotatingKeyFromD1(service, env) {
-  const secretName = `${service.toUpperCase()}_KEYS`;
-  const keyJson = env[secretName];
-  if (!keyJson) throw new ErrorResponse(`Rotation failed: Secret ${secretName} not found.`, 500);
-  const keys = JSON.parse(keyJson);
-  if (!Array.isArray(keys) || keys.length === 0) throw new ErrorResponse(`Rotation failed: Secret ${secretName} is not a valid array.`, 500);
-
-  const statement = env.DB.prepare(`INSERT INTO rotation_state (service_name, next_index) VALUES (?1, 1) ON CONFLICT(service_name) DO UPDATE SET next_index = (next_index + 1) % ?2 RETURNING next_index;`).bind(service, keys.length);
-  try {
-    const { results } = await statement.all();
-    const nextIndexRaw = results[0]?.next_index ?? 1;
-    const currentIndex = (nextIndexRaw - 1 + keys.length) % keys.length;
-    return keys[currentIndex];
-  } catch (e) {
-    throw new ErrorResponse(`D1 Database Error: ${e.message}`, 500);
-  }
-}
-
-function getApiKey(request) {
-  const authHeader = request.headers.get('Authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) return authHeader.substring(7);
-  const googHeader = request.headers.get('x-goog-api-key');
-  if (googHeader) return googHeader;
-  const url = new URL(request.url);
-  if (url.searchParams.has('key')) return url.searchParams.get('key');
-  return null;
-}
-
-function isRequestCacheable(request, model) {
-  if (request.method !== 'POST') return false;
-  const url = new URL(request.url);
-  if (NON_CACHEABLE_PATHS.some(path => url.pathname.includes(path))) return false;
-  const modelLower = model.toLowerCase();
-  if (NON_CACHEABLE_MODELS.some(keyword => modelLower.includes(keyword))) return false;
-  return true;
+  response.headers.set('Access-Control-Allow-Origin', '*');
+  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-goog-api-key, anthropic-version, openai-organization');
 }
 
 function handleOptions() {
