@@ -12,6 +12,7 @@
  */
 
 // --- CONFIGURATION ---
+// 使用const常量对象，键使用小写形式以避免后续toLowerCase调用
 const ROUTE_MAP = {
   "cerebras": "api.cerebras.ai",
   "claude": "api.anthropic.com",
@@ -28,20 +29,24 @@ const ROUTE_MAP = {
  * @param {string} service - 服务提供商名称
  * @returns {string|null} 提取的API密钥
  */
+/**
+ * 从请求中提取API密钥，根据不同服务商的格式
+ * @param {Request} request - 传入的请求
+ * @param {string} service - 服务提供商名称
+ * @returns {string|null} 提取的API密钥
+ */
 function extractApiKey(request, service) {
-  const authHeader = request.headers.get('Authorization');
-  const xApiKeyHeader = request.headers.get('x-api-key');
-  const xGoogApiKeyHeader = request.headers.get('x-goog-api-key');
-  
-  switch (service.toLowerCase()) {
+  // 避免不必要的toLowerCase调用，因为服务名称已经在fetch中处理过
+  switch (service) {
     case 'gemini':
       // Gemini使用x-goog-api-key头
-      return xGoogApiKeyHeader || null;
+      return request.headers.get('x-goog-api-key') || null;
     case 'claude':
       // Claude使用x-api-key头
-      return xApiKeyHeader || null;
+      return request.headers.get('x-api-key') || null;
     default:
       // 其他服务商使用Authorization头的Bearer格式
+      const authHeader = request.headers.get('Authorization');
       if (authHeader && authHeader.startsWith('Bearer ')) {
         return authHeader.substring(7);
       }
@@ -65,21 +70,23 @@ async function getNextKeyIndex(db, service, keysCount) {
     // 表名常量，方便修改
     const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据库表名修改
     
-    // 更新并获取下一个索引
-    const statement = db.prepare(`
-      INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index, last_updated)
-      VALUES (?1, 1, CURRENT_TIMESTAMP)
-      ON CONFLICT(service_name) DO UPDATE
-      SET next_index = (next_index + 1) % ?2,
-          last_updated = CURRENT_TIMESTAMP
-      RETURNING next_index;
-    `).bind(service, keysCount);
-    
-    const { results } = await statement.all();
-    
-    // 确保索引在有效范围内
-    const nextIndex = results[0]?.next_index || 1;
-    return (nextIndex - 1 + keysCount) % keysCount;
+    // 使用事务确保原子性，避免并发访问问题
+    return await db.transaction(async (tx) => {
+      // 更新并获取下一个索引
+      const statement = tx.prepare(`
+         INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index)
+         VALUES (?1, 1)
+         ON CONFLICT(service_name) DO UPDATE
+         SET next_index = (next_index + 1) % ?2
+         RETURNING next_index;
+       `).bind(service, keysCount);
+      
+      const { results } = await statement.all();
+      
+      // 确保索引在有效范围内
+      const nextIndex = results[0]?.next_index || 1;
+      return (nextIndex - 1 + keysCount) % keysCount;
+    });
   } catch (e) {
     throw new Error(`D1数据库错误: ${e.message}`);
   }
@@ -111,28 +118,48 @@ async fetch(request, env, ctx) {
         return new Response('url格式错误', { status: 325 });
       }
 
-      // Clone the request to safely read the body
-      const clonedRequest = request.clone();
-      requestData = await extractRequestData(clonedRequest);
+      // 提取服务名称（已验证为小写）
+      const service = pathSegments[0];
+      
+      // 延迟克隆请求和解析数据，仅在必要时执行
+      requestData = { service, model: 'unknown' };
+      
+      // 尝试提取模型信息，但不阻塞主要逻辑
+      try {
+        if (request.method === 'POST') {
+          // 仅当需要记录模型信息时才克隆请求和解析body
+          if (env.LOGS) {
+            const clonedRequest = request.clone();
+            const body = await clonedRequest.json().catch(() => ({}));
+            requestData.model = body.model || 'unknown';
+          }
+        } else if (service === 'gemini' && pathSegments[3]) {
+          // 对于Gemini的GET请求，从URL路径提取模型
+          requestData.model = pathSegments[3].split(':')[0];
+        }
+      } catch (e) {
+        // 忽略任何数据提取错误，继续处理请求
+      }
 
-      // 处理API轮询逻辑
-      response = await handleRequestWithRotation(request, requestData.service, env);
+      // 处理API轮询逻辑，并传递已解析的URL以避免重复创建
+      response = await handleRequestWithRotation(request, service, env, url);
       
-      // Clone the response to read status, etc., without consuming the body
-      const clonedResponse = response.clone();
-      
-      // Asynchronously log the successful request
-      ctx.waitUntil(logRequest(env, requestData, clonedResponse, startTime));
+      // 仅当有LOGS绑定时才克隆响应和记录日志
+      if (env.LOGS) {
+        const clonedResponse = response.clone();
+        ctx.waitUntil(logRequest(env, requestData, clonedResponse, startTime));
+      }
       
       return response;
 
     } catch (err) {
       // 对于URL格式错误，我们已经在前面单独处理并返回，这里处理其他错误
-      // In case of other errors, create a synthetic error response
       response = new Response(err.message || 'An unexpected error occurred.', { status: 500 });
       
-      // Asynchronously log the failed request
-      ctx.waitUntil(logRequest(env, requestData, response, startTime, err));
+      // 仅当有LOGS绑定时才记录错误日志
+      if (env.LOGS) {
+        ctx.waitUntil(logRequest(env, requestData, response, startTime, err));
+      }
 
       return response;
     }
@@ -147,120 +174,102 @@ async fetch(request, env, ctx) {
  * @param {object} env - 环境变量，包含LOGS和DB绑定
  * @returns {Promise<Response>} 处理后的响应
  */
-async function handleRequestWithRotation(request, service, env) {
+/**
+ * 带轮询功能的请求处理函数
+ * @param {Request} request - 传入的请求
+ * @param {string} service - 服务提供商名称
+ * @param {object} env - 环境变量，包含LOGS和DB绑定
+ * @param {URL} url - 已解析的URL对象，避免重复创建
+ * @returns {Promise<Response>} 处理后的响应
+ */
+async function handleRequestWithRotation(request, service, env, url) {
   if (request.method === 'OPTIONS') {
     return handleOptions();
   }
 
-  const url = new URL(request.url);
-
   // 服务提供商已经在fetch函数中验证过，这里直接获取目标主机
   const targetHost = ROUTE_MAP[service];
 
+  // 重用传入的URL对象，避免重复创建
   url.hostname = targetHost;
   url.pathname = url.pathname.substring(service.length + 1); // Removes /service prefix
 
-  // 提取请求中的API密钥
-  const requestApiKey = extractApiKey(request, service);
-  
-  // 获取MASTER_KEY和服务提供商的密钥配置
+  // 获取MASTER_KEY配置
   const masterKey = env.MASTER_KEY;
-  const serviceKeysEnv = env[`${service.toUpperCase()}_KEYS`];
   
-  let proxyRequest = request;
-  
-  // 检查是否启用轮询模式
-  if (masterKey && requestApiKey === masterKey) {
-    // 启用轮询模式
-    if (!serviceKeysEnv) {
-      // 未配置轮询API密钥
-      return new Response('未配置轮询api key', { status: 326 });
-    }
+  // 只有在启用轮询模式时才提取API密钥和处理轮询逻辑
+  if (masterKey) {
+    const requestApiKey = extractApiKey(request, service);
     
-    try {
-      // 解析服务提供商的密钥列表
-      const serviceKeys = JSON.parse(serviceKeysEnv);
+    if (requestApiKey === masterKey) {
+      // 启用轮询模式
+      const serviceKeysEnv = env[`${service.toUpperCase()}_KEYS`];
       
-      if (!Array.isArray(serviceKeys) || serviceKeys.length === 0) {
+      if (!serviceKeysEnv) {
+        // 未配置轮询API密钥
         return new Response('未配置轮询api key', { status: 326 });
       }
       
-      // 从D1数据库获取下一个要使用的密钥索引
-      const nextIndex = await getNextKeyIndex(env.DB, service, serviceKeys.length);
-      const selectedKey = serviceKeys[nextIndex];
-      
-      // 根据不同服务商格式设置相应的请求头
-      const headers = new Headers(request.headers);
-      
-      switch (service.toLowerCase()) {
-        case 'gemini':
-          headers.set('x-goog-api-key', selectedKey);
-          break;
-        case 'claude':
-          headers.set('x-api-key', selectedKey);
-          break;
-        default:
-          headers.set('Authorization', `Bearer ${selectedKey}`);
-          break;
+      try {
+        // 解析服务提供商的密钥列表
+        const serviceKeys = JSON.parse(serviceKeysEnv);
+        
+        if (!Array.isArray(serviceKeys) || serviceKeys.length === 0) {
+          return new Response('未配置轮询api key', { status: 326 });
+        }
+        
+        // 从D1数据库获取下一个要使用的密钥索引
+        const nextIndex = await getNextKeyIndex(env.DB, service, serviceKeys.length);
+        const selectedKey = serviceKeys[nextIndex];
+        
+        // 根据不同服务商格式设置相应的请求头
+        const headers = new Headers(request.headers);
+        
+        // 避免不必要的toLowerCase调用
+        switch (service) {
+          case 'gemini':
+            headers.set('x-goog-api-key', selectedKey);
+            break;
+          case 'claude':
+            headers.set('x-api-key', selectedKey);
+            break;
+          default:
+            headers.set('Authorization', `Bearer ${selectedKey}`);
+            break;
+        }
+        
+        // 创建带有新头信息的代理请求并发送
+        const proxyRequest = new Request(url.toString(), {
+          method: request.method,
+          headers: headers,
+          body: request.body,
+          redirect: 'follow',
+        });
+        
+        const upstreamResponse = await fetch(proxyRequest);
+        const newResponse = new Response(upstreamResponse.body, upstreamResponse);
+        applyCorsHeaders(newResponse);
+        return newResponse;
+        
+      } catch (e) {
+        return new Response(`轮询配置错误: ${e.message}`, { status: 500 });
       }
-      
-      // 创建带有新头信息的代理请求
-      proxyRequest = new Request(url.toString(), {
-        method: request.method,
-        headers: headers,
-        body: request.body,
-        redirect: 'follow',
-      });
-      
-    } catch (e) {
-      return new Response(`轮询配置错误: ${e.message}`, { status: 500 });
     }
   }
   
-  // 对于非轮询模式，保持原有请求不变
-  if (proxyRequest === request) {
-    proxyRequest = new Request(url.toString(), {
-      method: request.method,
-      headers: request.headers,
-      body: request.body,
-      redirect: 'follow',
-    });
-  }
+  // 非轮询模式，直接创建请求并发送，避免额外的比较操作
+  const proxyRequest = new Request(url.toString(), {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    redirect: 'follow',
+  });
   
   const upstreamResponse = await fetch(proxyRequest);
   const newResponse = new Response(upstreamResponse.body, upstreamResponse);
   applyCorsHeaders(newResponse);
   return newResponse;
 }
-
-/**
- * Extracts key information from the incoming request.
- * @param {Request} request
- * @returns {Promise<object>}
- */
-async function extractRequestData(request) {
-    const url = new URL(request.url);
-    const pathSegments = url.pathname.split('/').filter(Boolean);
-    const service = pathSegments[0] || 'unknown';
-    let model = 'unknown';
-
-    try {
-        if (request.method === 'POST') {
-            const body = await request.json();
-            model = body.model || 'unknown';
-        }
-    } catch (e) {
-        // Ignore if body is not JSON or empty
-    }
-    
-    // For Gemini, model is in the URL, e.g., /gemini/v1beta/models/gemini-pro:generateContent
-    if (service === 'gemini' && pathSegments[3]) {
-        model = pathSegments[3].split(':')[0];
-    }
-    
-    return { service, model };
-}
-
 
 /**
  * Asynchronously logs data to the Analytics Engine.
@@ -270,8 +279,8 @@ async function extractRequestData(request) {
  * @param {number} startTime - The timestamp when the request started.
  * @param {Error} [error] - An optional error object if the request failed.
  */
-async function logRequest(env, requestData, response, startTime, error) {
-  // If the LOGS binding doesn't exist, do nothing.
+async function logRequest(env, requestData, response, startTime, error = null) {
+  // 检查是否有LOGS绑定，避免不必要的计算
   if (!env.LOGS) {
     console.log("Analytics Engine binding 'LOGS' not found. Skipping logging.");
     return;
@@ -280,41 +289,59 @@ async function logRequest(env, requestData, response, startTime, error) {
   const latencyMs = Date.now() - startTime;
   const service = requestData.service || "unknown";
   const model = requestData.model || "unknown";
-  const errorMessage = error ? error.message : null;
 
-  const dataPoint = {
-    // 按照要求配置数据点
-    // index1存储服务商
-    indexes: [
-      service
-    ],
-    // blob1存储使用服务商，blob2存储模型，blob3存储报错信息
-    blobs: [
-      service,      // blob1: 服务商
-      model,        // blob2: 模型
-      errorMessage  // blob3: 报错信息
-    ],
-    // double1存储状态码，double2存储耗时
-    doubles: [
-      response.status, // double1: HTTP状态码
-      latencyMs        // double2: 耗时（毫秒）
-    ],
-  };
+  try {
+    // 准备日志数据点，只在有错误时添加错误信息
+    const dataPoint = {
+      // 按照要求配置数据点
+      indexes: [
+        service
+      ],
+      // 仅在有错误时添加错误信息
+      blobs: error ? [
+        service,
+        model,
+        error.message
+      ] : [
+        service,
+        model,
+        null
+      ],
+      doubles: [
+        response.status,
+        latencyMs
+      ],
+    };
 
-  // Write the data point to the Analytics Engine
-  env.LOGS.writeDataPoint(dataPoint);
+    // Write the data point to the Analytics Engine
+    env.LOGS.writeDataPoint(dataPoint);
+
+  } catch (logError) {
+    // 记录日志本身失败时，记录到控制台但不影响主流程
+    console.error('Failed to log request:', logError);
+  }
 }
 
 
 // --- HELPER FUNCTIONS ---
 function applyCorsHeaders(response) {
-  response.headers.set('Access-Control-Allow-Origin', '*');
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-goog-api-key, anthropic-version, openai-organization');
+  // 避免重复设置CORS头
+  if (!response.headers.has('Access-Control-Allow-Origin')) {
+    response.headers.set('Access-Control-Allow-Origin', '*');
+    response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-goog-api-key, anthropic-version, openai-organization');
+  }
 }
 
 function handleOptions() {
-  const response = new Response(null, { status: 204 });
-  applyCorsHeaders(response);
+  // 直接创建带有CORS头的响应，避免额外的函数调用
+  const response = new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, x-goog-api-key, anthropic-version, openai-organization'
+    }
+  });
   return response;
 }
