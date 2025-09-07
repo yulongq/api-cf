@@ -78,5 +78,3 @@ async function testDatabaseConnection(env) {
   }
 }
 ```
-
-如需任何帮助或有任何疑问，请随时联系我们。
