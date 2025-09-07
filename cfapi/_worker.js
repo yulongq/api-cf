@@ -20,6 +20,71 @@ const ROUTE_MAP = {
   "openai": "api.openai.com",
 };
 
+// --- HELPER FUNCTIONS FOR API ROTATION ---
+
+/**
+ * 从请求中提取API密钥，根据不同服务商的格式
+ * @param {Request} request - 传入的请求
+ * @param {string} service - 服务提供商名称
+ * @returns {string|null} 提取的API密钥
+ */
+function extractApiKey(request, service) {
+  const authHeader = request.headers.get('Authorization');
+  const xApiKeyHeader = request.headers.get('x-api-key');
+  const xGoogApiKeyHeader = request.headers.get('x-goog-api-key');
+  
+  switch (service.toLowerCase()) {
+    case 'gemini':
+      // Gemini使用x-goog-api-key头
+      return xGoogApiKeyHeader || null;
+    case 'claude':
+      // Claude使用x-api-key头
+      return xApiKeyHeader || null;
+    default:
+      // 其他服务商使用Authorization头的Bearer格式
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        return authHeader.substring(7);
+      }
+      return null;
+  }
+}
+
+/**
+ * 从D1数据库获取下一个要使用的API密钥索引
+ * @param {object} db - D1数据库实例
+ * @param {string} service - 服务提供商名称
+ * @param {number} keysCount - 可用密钥数量
+ * @returns {Promise<number>} 下一个要使用的密钥索引
+ */
+async function getNextKeyIndex(db, service, keysCount) {
+  if (!db) {
+    throw new Error('D1数据库未配置');
+  }
+  
+  try {
+    // 表名常量，方便修改
+    const ROTATION_STATE_TABLE = 'api_rotation_state'; // 用户可以根据实际数据库表名修改
+    
+    // 更新并获取下一个索引
+    const statement = db.prepare(`
+      INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index, last_updated)
+      VALUES (?1, 1, CURRENT_TIMESTAMP)
+      ON CONFLICT(service_name) DO UPDATE
+      SET next_index = (next_index + 1) % ?2,
+          last_updated = CURRENT_TIMESTAMP
+      RETURNING next_index;
+    `).bind(service, keysCount);
+    
+    const { results } = await statement.all();
+    
+    // 确保索引在有效范围内
+    const nextIndex = results[0]?.next_index || 1;
+    return (nextIndex - 1 + keysCount) % keysCount;
+  } catch (e) {
+    throw new Error(`D1数据库错误: ${e.message}`);
+  }
+}
+
 // --- WORKER LOGIC (ES Modules format) ---
 export default {
   /**
@@ -27,9 +92,8 @@ export default {
    * @param {Request} request The incoming request.
    * @param {object} env Environment variables, including the LOGS binding.
    * @param {object} ctx Execution context, used for ctx.waitUntil().
-   * @returns {Promise<Response>}
-   */
-  async fetch(request, env, ctx) {
+   * @returns {Promise<Response>}      */
+async fetch(request, env, ctx) {
     const startTime = Date.now();
     let response;
     let requestData = {};
@@ -51,7 +115,8 @@ export default {
       const clonedRequest = request.clone();
       requestData = await extractRequestData(clonedRequest);
 
-      response = await handleRequest(request, requestData.service);
+      // 处理API轮询逻辑
+      response = await handleRequestWithRotation(request, requestData.service, env);
       
       // Clone the response to read status, etc., without consuming the body
       const clonedResponse = response.clone();
@@ -75,7 +140,14 @@ export default {
 };
 
 // --- CORE HANDLER ---
-async function handleRequest(request, service) {
+/**
+ * 带轮询功能的请求处理函数
+ * @param {Request} request - 传入的请求
+ * @param {string} service - 服务提供商名称
+ * @param {object} env - 环境变量，包含LOGS和DB绑定
+ * @returns {Promise<Response>} 处理后的响应
+ */
+async function handleRequestWithRotation(request, service, env) {
   if (request.method === 'OPTIONS') {
     return handleOptions();
   }
@@ -88,13 +160,73 @@ async function handleRequest(request, service) {
   url.hostname = targetHost;
   url.pathname = url.pathname.substring(service.length + 1); // Removes /service prefix
 
-  const proxyRequest = new Request(url.toString(), {
-    method: request.method,
-    headers: request.headers,
-    body: request.body,
-    redirect: 'follow',
-  });
-
+  // 提取请求中的API密钥
+  const requestApiKey = extractApiKey(request, service);
+  
+  // 获取MASTER_KEY和服务提供商的密钥配置
+  const masterKey = env.MASTER_KEY;
+  const serviceKeysEnv = env[`${service.toUpperCase()}_KEYS`];
+  
+  let proxyRequest = request;
+  
+  // 检查是否启用轮询模式
+  if (masterKey && requestApiKey === masterKey) {
+    // 启用轮询模式
+    if (!serviceKeysEnv) {
+      // 未配置轮询API密钥
+      return new Response('未配置轮询api key', { status: 626 });
+    }
+    
+    try {
+      // 解析服务提供商的密钥列表
+      const serviceKeys = JSON.parse(serviceKeysEnv);
+      
+      if (!Array.isArray(serviceKeys) || serviceKeys.length === 0) {
+        return new Response('未配置轮询api key', { status: 626 });
+      }
+      
+      // 从D1数据库获取下一个要使用的密钥索引
+      const nextIndex = await getNextKeyIndex(env.DB, service, serviceKeys.length);
+      const selectedKey = serviceKeys[nextIndex];
+      
+      // 根据不同服务商格式设置相应的请求头
+      const headers = new Headers(request.headers);
+      
+      switch (service.toLowerCase()) {
+        case 'gemini':
+          headers.set('x-goog-api-key', selectedKey);
+          break;
+        case 'claude':
+          headers.set('x-api-key', selectedKey);
+          break;
+        default:
+          headers.set('Authorization', `Bearer ${selectedKey}`);
+          break;
+      }
+      
+      // 创建带有新头信息的代理请求
+      proxyRequest = new Request(url.toString(), {
+        method: request.method,
+        headers: headers,
+        body: request.body,
+        redirect: 'follow',
+      });
+      
+    } catch (e) {
+      return new Response(`轮询配置错误: ${e.message}`, { status: 500 });
+    }
+  }
+  
+  // 对于非轮询模式，保持原有请求不变
+  if (proxyRequest === request) {
+    proxyRequest = new Request(url.toString(), {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      redirect: 'follow',
+    });
+  }
+  
   const upstreamResponse = await fetch(proxyRequest);
   const newResponse = new Response(upstreamResponse.body, upstreamResponse);
   applyCorsHeaders(newResponse);
