@@ -70,23 +70,20 @@ async function getNextKeyIndex(db, service, keysCount) {
     // 表名常量，方便修改
     const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据库表名修改
     
-    // 使用事务确保原子性，避免并发访问问题
-    const statements = [
-      db.prepare(`
-        INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index)
-        VALUES (?1, 1)
-        ON CONFLICT(service_name) DO UPDATE
-        SET next_index = (next_index + 1) % ?2
-        RETURNING next_index;
-      `).bind(service, keysCount)
-    ];
-
-    const [{ results }] = await db.batch(statements);
-      
-      // 确保索引在有效范围内
-      const nextIndex = results[0]?.next_index || 1;
-      return (nextIndex - 1 + keysCount) % keysCount;
-    });
+    // 使用D1标准API直接操作，利用SQL的ON CONFLICT机制确保原子性
+    const statement = db.prepare(`
+      INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index)
+      VALUES (?1, 1)
+      ON CONFLICT(service_name) DO UPDATE
+      SET next_index = (next_index + 1) % ?2
+      RETURNING next_index;
+    `).bind(service, keysCount);
+    
+    const { results } = await statement.all();
+    
+    // 确保索引在有效范围内
+    const nextIndex = results[0]?.next_index || 1;
+    return (nextIndex - 1 + keysCount) % keysCount;
   } catch (e) {
     throw new Error(`D1数据库错误: ${e.message}`);
   }
