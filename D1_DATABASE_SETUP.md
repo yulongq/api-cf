@@ -8,17 +8,17 @@
 
 ```javascript
 // 表名常量，方便修改
-const ROTATION_STATE_TABLE = 'api_rotation_state'; // 用户可以根据实际数据库表名修改
+const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据库表名修改
 ```
 
-默认表名为 `api_rotation_state`，您可以根据自己的需求修改这个值。
+默认表名为 `rotation_state`，您可以根据自己的需求修改这个值。
 
 ## 2. 创建表的 SQL 语句
 
 您需要在 D1 数据库中创建相应的表。请使用以下 SQL 语句：
 
 ```sql
-CREATE TABLE IF NOT EXISTS api_rotation_state (
+CREATE TABLE IF NOT EXISTS rotation_state (
   service_name TEXT PRIMARY KEY,
   next_index INTEGER NOT NULL DEFAULT 1,
   last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -31,10 +31,10 @@ CREATE TABLE IF NOT EXISTS api_rotation_state (
 
 ```bash
 # 执行初始化 SQL 到远程数据库
-npx wrangler d1 execute api-rotation-db --remote --command="CREATE TABLE IF NOT EXISTS api_rotation_state (service_name TEXT PRIMARY KEY, next_index INTEGER NOT NULL DEFAULT 1, last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+npx wrangler d1 execute api-rotation-db --remote --command="CREATE TABLE IF NOT EXISTS rotation_state (service_name TEXT PRIMARY KEY, next_index INTEGER NOT NULL DEFAULT 1, last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);"
 
 # 或执行初始化 SQL 到本地开发数据库
-npx wrangler d1 execute api-rotation-db --local --command="CREATE TABLE IF NOT EXISTS api_rotation_state (service_name TEXT PRIMARY KEY, next_index INTEGER NOT NULL DEFAULT 1, last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+npx wrangler d1 execute api-rotation-db --local --command="CREATE TABLE IF NOT EXISTS rotation_state (service_name TEXT PRIMARY KEY, next_index INTEGER NOT NULL DEFAULT 1, last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);"
 ```
 
 ## 4. 配置 wrangler.toml

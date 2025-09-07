@@ -63,7 +63,7 @@ async function getNextKeyIndex(db, service, keysCount) {
   
   try {
     // 表名常量，方便修改
-    const ROTATION_STATE_TABLE = 'api_rotation_state'; // 用户可以根据实际数据库表名修改
+    const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据库表名修改
     
     // 更新并获取下一个索引
     const statement = db.prepare(`
@@ -107,8 +107,8 @@ async fetch(request, env, ctx) {
       
       // 检查是否有服务提供商部分，并且该提供商在ROUTE_MAP中配置
       if (pathSegments.length < 1 || !ROUTE_MAP[pathSegments[0]]) {
-        // URL格式错误，返回错误码625，且不记录到日志
-        return new Response('url格式错误', { status: 625 });
+        // URL格式错误，返回错误码325，且不记录到日志
+        return new Response('url格式错误', { status: 325 });
       }
 
       // Clone the request to safely read the body
@@ -174,7 +174,7 @@ async function handleRequestWithRotation(request, service, env) {
     // 启用轮询模式
     if (!serviceKeysEnv) {
       // 未配置轮询API密钥
-      return new Response('未配置轮询api key', { status: 626 });
+      return new Response('未配置轮询api key', { status: 326 });
     }
     
     try {
@@ -182,7 +182,7 @@ async function handleRequestWithRotation(request, service, env) {
       const serviceKeys = JSON.parse(serviceKeysEnv);
       
       if (!Array.isArray(serviceKeys) || serviceKeys.length === 0) {
-        return new Response('未配置轮询api key', { status: 626 });
+        return new Response('未配置轮询api key', { status: 326 });
       }
       
       // 从D1数据库获取下一个要使用的密钥索引
