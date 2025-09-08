@@ -12,7 +12,7 @@
  */
 
 // --- CONFIGURATION ---
-// 使用const常量对象，键使用小写形式以避免后续toLowerCase调用
+// Using const for configuration objects with lowercase keys to avoid toLowerCase calls
 const ROUTE_MAP = {
   "cerebras": "api.cerebras.ai",
   "claude": "api.anthropic.com",
@@ -24,28 +24,22 @@ const ROUTE_MAP = {
 // --- HELPER FUNCTIONS FOR API ROTATION ---
 
 /**
- * 从请求中提取API密钥，根据不同服务商的格式
- * @param {Request} request - 传入的请求
- * @param {string} service - 服务提供商名称
- * @returns {string|null} 提取的API密钥
- */
-/**
- * 从请求中提取API密钥，根据不同服务商的格式
- * @param {Request} request - 传入的请求
- * @param {string} service - 服务提供商名称
- * @returns {string|null} 提取的API密钥
+ * Extracts API key from request based on service provider format
+ * @param {Request} request - The incoming request
+ * @param {string} service - Service provider name
+ * @returns {string|null} Extracted API key
  */
 function extractApiKey(request, service) {
-  // 避免不必要的toLowerCase调用，因为服务名称已经在fetch中处理过
+  // Avoid unnecessary toLowerCase calls since service name is already processed in fetch
   switch (service) {
     case 'gemini':
-      // Gemini使用x-goog-api-key头
+      // Gemini uses x-goog-api-key header
       return request.headers.get('x-goog-api-key') || null;
     case 'claude':
-      // Claude使用x-api-key头
+      // Claude uses x-api-key header
       return request.headers.get('x-api-key') || null;
     default:
-      // 其他服务商使用Authorization头的Bearer格式
+      // Other services use Authorization header with Bearer format
       const authHeader = request.headers.get('Authorization');
       if (authHeader && authHeader.startsWith('Bearer ')) {
         return authHeader.substring(7);
@@ -55,11 +49,11 @@ function extractApiKey(request, service) {
 }
 
 /**
- * 从D1数据库获取下一个要使用的API密钥索引
- * @param {object} db - D1数据库实例
- * @param {string} service - 服务提供商名称
- * @param {number} keysCount - 可用密钥数量
- * @returns {Promise<number>} 下一个要使用的密钥索引
+ * Gets next API key index to use from D1 database
+ * @param {object} db - D1 database instance
+ * @param {string} service - Service provider name
+ * @param {number} keysCount - Number of available keys
+ * @returns {Promise<number>} Next key index to use
  */
 async function getNextKeyIndex(db, service, keysCount) {
   if (!db) {
@@ -67,10 +61,10 @@ async function getNextKeyIndex(db, service, keysCount) {
   }
   
   try {
-    // 表名常量，方便修改
-    const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据库表名修改
+    // Table name constant for easier modification
+    const ROTATION_STATE_TABLE = 'rotation_state'; // Users can modify based on actual database table name
     
-    // 使用D1标准API直接操作，利用SQL的ON CONFLICT机制确保原子性
+    // Direct operation using D1 standard API, leveraging SQL ON CONFLICT mechanism to ensure atomicity
     const statement = db.prepare(`
       INSERT INTO ${ROTATION_STATE_TABLE} (service_name, next_index)
       VALUES (?1, 1)
@@ -81,7 +75,7 @@ async function getNextKeyIndex(db, service, keysCount) {
     
     const { results } = await statement.all();
     
-    // 确保索引在有效范围内
+    // Ensure index is within valid range
     const nextIndex = results[0]?.next_index || 1;
     return (nextIndex - 1 + keysCount) % keysCount;
   } catch (e) {
@@ -103,45 +97,45 @@ async fetch(request, env, ctx) {
     let requestData = {};
 
     try {
-      // 验证URL格式
+      // Validate URL format
       const url = new URL(request.url);
       
-      // 解析路径段
+      // Parse path segments
       const pathSegments = url.pathname.split('/').filter(Boolean);
       
-      // 检查是否有服务提供商部分，并且该提供商在ROUTE_MAP中配置
+      // Check if there's a service provider segment and it's configured in ROUTE_MAP
       if (pathSegments.length < 1 || !ROUTE_MAP[pathSegments[0]]) {
-        // URL格式错误，返回错误码325，且不记录到日志
+        // Invalid URL format, return error code 325 without logging
         return new Response('url格式错误', { status: 325 });
       }
 
-      // 提取服务名称（已验证为小写）
+      // Extract service name (already validated to be lowercase)
       const service = pathSegments[0];
       
-      // 延迟克隆请求和解析数据，仅在必要时执行
+      // Delay cloning request and parsing data until necessary
       requestData = { service, model: 'unknown' };
       
-      // 尝试提取模型信息，但不阻塞主要逻辑
+      // Attempt to extract model information without blocking main logic
       try {
         if (request.method === 'POST') {
-          // 仅当需要记录模型信息时才克隆请求和解析body
+          // Only clone request and parse body when model info needs to be logged
           if (env.LOGS) {
             const clonedRequest = request.clone();
             const body = await clonedRequest.json().catch(() => ({}));
             requestData.model = body.model || 'unknown';
           }
         } else if (service === 'gemini' && pathSegments[3]) {
-          // 对于Gemini的GET请求，从URL路径提取模型
+          // For Gemini GET requests, extract model from URL path
           requestData.model = pathSegments[3].split(':')[0];
         }
       } catch (e) {
-        // 忽略任何数据提取错误，继续处理请求
+        // Ignore any data extraction errors and continue processing
       }
 
-      // 处理API轮询逻辑，并传递已解析的URL以避免重复创建
+      // Handle API rotation logic and pass parsed URL to avoid duplicate creation
       response = await handleRequestWithRotation(request, service, env, url);
       
-      // 仅当有LOGS绑定时才克隆响应和记录日志
+      // Only clone response and log when LOGS binding is available
       if (env.LOGS) {
         const clonedResponse = response.clone();
         ctx.waitUntil(logRequest(env, requestData, clonedResponse, startTime));
@@ -150,10 +144,10 @@ async fetch(request, env, ctx) {
       return response;
 
     } catch (err) {
-      // 对于URL格式错误，我们已经在前面单独处理并返回，这里处理其他错误
+      // For URL format errors, we already handled them separately earlier, here handle other errors
       response = new Response(err.message || 'An unexpected error occurred.', { status: 500 });
       
-      // 仅当有LOGS绑定时才记录错误日志
+      // Only log error when LOGS binding is available
       if (env.LOGS) {
         ctx.waitUntil(logRequest(env, requestData, response, startTime, err));
       }
@@ -165,64 +159,57 @@ async fetch(request, env, ctx) {
 
 // --- CORE HANDLER ---
 /**
- * 带轮询功能的请求处理函数
- * @param {Request} request - 传入的请求
- * @param {string} service - 服务提供商名称
- * @param {object} env - 环境变量，包含LOGS和DB绑定
- * @returns {Promise<Response>} 处理后的响应
- */
-/**
- * 带轮询功能的请求处理函数
- * @param {Request} request - 传入的请求
- * @param {string} service - 服务提供商名称
- * @param {object} env - 环境变量，包含LOGS和DB绑定
- * @param {URL} url - 已解析的URL对象，避免重复创建
- * @returns {Promise<Response>} 处理后的响应
+ * Request handler with API key rotation functionality
+ * @param {Request} request - The incoming request
+ * @param {string} service - Service provider name
+ * @param {object} env - Environment variables containing LOGS and DB bindings
+ * @param {URL} url - Parsed URL object to avoid duplicate creation
+ * @returns {Promise<Response>} Processed response
  */
 async function handleRequestWithRotation(request, service, env, url) {
   if (request.method === 'OPTIONS') {
     return handleOptions();
   }
 
-  // 服务提供商已经在fetch函数中验证过，这里直接获取目标主机
+  // Service provider already validated in fetch function, directly get target host
   const targetHost = ROUTE_MAP[service];
 
-  // 重用传入的URL对象，避免重复创建
+  // Reuse the provided URL object to avoid duplicate creation
   url.hostname = targetHost;
   url.pathname = url.pathname.substring(service.length + 1); // Removes /service prefix
 
-  // 获取MASTER_KEY配置
+  // Get MASTER_KEY configuration
   const masterKey = env.MASTER_KEY;
   
-  // 只有在启用轮询模式时才提取API密钥和处理轮询逻辑
+  // Only extract API key and handle rotation logic when rotation mode is enabled
   if (masterKey) {
     const requestApiKey = extractApiKey(request, service);
     
     if (requestApiKey === masterKey) {
-      // 启用轮询模式
+      // Enable rotation mode
       const serviceKeysEnv = env[`${service.toUpperCase()}_KEYS`];
       
       if (!serviceKeysEnv) {
-        // 未配置轮询API密钥
+        // Rotation API keys not configured
         return new Response('未配置轮询api key', { status: 326 });
       }
       
       try {
-        // 解析服务提供商的密钥列表
+        // Parse service provider's key list
         const serviceKeys = JSON.parse(serviceKeysEnv);
         
         if (!Array.isArray(serviceKeys) || serviceKeys.length === 0) {
           return new Response('未配置轮询api key', { status: 326 });
         }
         
-        // 从D1数据库获取下一个要使用的密钥索引
+        // Get next key index to use from D1 database
         const nextIndex = await getNextKeyIndex(env.DB, service, serviceKeys.length);
         const selectedKey = serviceKeys[nextIndex];
         
-        // 根据不同服务商格式设置相应的请求头
+        // Set appropriate request headers based on service provider format
         const headers = new Headers(request.headers);
         
-        // 避免不必要的toLowerCase调用
+        // Avoid unnecessary toLowerCase calls
         switch (service) {
           case 'gemini':
             headers.set('x-goog-api-key', selectedKey);
@@ -235,7 +222,7 @@ async function handleRequestWithRotation(request, service, env, url) {
             break;
         }
         
-        // 创建带有新头信息的代理请求并发送
+        // Create proxy request with new headers and send
         const proxyRequest = new Request(url.toString(), {
           method: request.method,
           headers: headers,
@@ -254,7 +241,7 @@ async function handleRequestWithRotation(request, service, env, url) {
     }
   }
   
-  // 非轮询模式，直接创建请求并发送，避免额外的比较操作
+  // Non-rotation mode, directly create and send request to avoid extra comparison operations
   const proxyRequest = new Request(url.toString(), {
     method: request.method,
     headers: request.headers,
@@ -277,7 +264,7 @@ async function handleRequestWithRotation(request, service, env, url) {
  * @param {Error} [error] - An optional error object if the request failed.
  */
 async function logRequest(env, requestData, response, startTime, error = null) {
-  // 检查是否有LOGS绑定，避免不必要的计算
+  // Check for LOGS binding to avoid unnecessary computations
   if (!env.LOGS) {
     console.log("Analytics Engine binding 'LOGS' not found. Skipping logging.");
     return;
@@ -288,13 +275,13 @@ async function logRequest(env, requestData, response, startTime, error = null) {
   const model = requestData.model || "unknown";
 
   try {
-    // 准备日志数据点，只在有错误时添加错误信息
+    // Prepare log data point, add error information only when there's an error
     const dataPoint = {
-      // 按照要求配置数据点
+      // Configure data point as required
       indexes: [
         service
       ],
-      // 仅在有错误时添加错误信息
+      // Add error information only when there's an error
       blobs: error ? [
         service,
         model,
@@ -314,7 +301,7 @@ async function logRequest(env, requestData, response, startTime, error = null) {
     env.LOGS.writeDataPoint(dataPoint);
 
   } catch (logError) {
-    // 记录日志本身失败时，记录到控制台但不影响主流程
+    // When logging itself fails, log to console but don't affect main flow
     console.error('Failed to log request:', logError);
   }
 }
@@ -322,7 +309,7 @@ async function logRequest(env, requestData, response, startTime, error = null) {
 
 // --- HELPER FUNCTIONS ---
 function applyCorsHeaders(response) {
-  // 避免重复设置CORS头
+  // Avoid duplicate CORS header settings
   if (!response.headers.has('Access-Control-Allow-Origin')) {
     response.headers.set('Access-Control-Allow-Origin', '*');
     response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
@@ -331,7 +318,7 @@ function applyCorsHeaders(response) {
 }
 
 function handleOptions() {
-  // 直接创建带有CORS头的响应，避免额外的函数调用
+  // Directly create response with CORS headers to avoid extra function calls
   const response = new Response(null, {
     status: 204,
     headers: {
