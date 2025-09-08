@@ -11,7 +11,7 @@
 - **OPENAI:**   `https://<your_url>/openai/...`
 - **CLAUDE:**   `https://<your_url>/claude/...`
 - **GROQ:**     `https://<your_url>/groq/...`
-- **CEREBRA:**  `https://<your_url>/cerebras/...`
+- **CEREBRAS:**  `https://<your_url>/cerebras/...`
 
 ## 可选功能
 
