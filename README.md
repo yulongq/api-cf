@@ -7,11 +7,11 @@
 
 ## 如何使用
 **基本使用方法：**
-- **GEMINI:**   `https://<your_pages_url>/gemini/...`
-- **OPENAI:**   `https://<your_pages_url>/openai/...`
-- **CLAUDE:**   `https://<your_pages_url>/claude/...`
-- **GROQ:**     `https://<your_pages_url>/groq/...`
-- **CEREBRA:**  `https://<your_pages_url>/cerebras/...`
+- **GEMINI:**   `https://<your_url>/gemini/...`
+- **OPENAI:**   `https://<your_url>/openai/...`
+- **CLAUDE:**   `https://<your_url>/claude/...`
+- **GROQ:**     `https://<your_url>/groq/...`
+- **CEREBRA:**  `https://<your_url>/cerebras/...`
 
 ## 可选功能
 
