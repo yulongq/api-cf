@@ -19,7 +19,7 @@
 该功能可记录所有API请求的关键指标，提供强大的可观测性。
 
 **配置方法：**
-- 参考详细配置指南：[ANALYTICS_ENGINE_SETUP.md](ANALYTICS_ENGINE_SETUP.md)
+- 参考详细配置指南：[ANALYTICS_ENGINE_SETUP](ANALYTICS_ENGINE_SETUP.md)
 - 在Cloudflare仪表板创建Analytics Engine数据集
 - 在wrangler.toml中配置LOGS绑定
 - 日志会自动记录服务商、模型、状态码、响应时间等信息
@@ -28,7 +28,7 @@
 该功能可实现API密钥的自动轮询，有效避免单个密钥的请求限制问题。
 
 **配置方法：**
-- 参考详细配置指南：[D1_DATABASE_SETUP.md](D1_DATABASE_SETUP.md)
+- 参考详细配置指南：[D1_DATABASE_SETUP](D1_DATABASE_SETUP.md)
 - 在Cloudflare仪表板创建D1数据库
 - 在wrangler.toml中配置DB绑定
 - 创建rotation_state表用于存储轮询状态
