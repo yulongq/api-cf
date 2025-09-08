@@ -15,7 +15,7 @@ const ROTATION_STATE_TABLE = 'rotation_state'; // 用户可以根据实际数据
 
 ## 2. 创建表的 SQL 语句
 
-您需要在 D1 数据库中创建相应的表。请使用以下 SQL 语句：
+您需要在 D1 数据库中创建相应的表。请使用以下 SQL 语句(可直接在仪表盘执行)：
 
 ```sql
 CREATE TABLE IF NOT EXISTS rotation_state (
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS rotation_state (
 );
 ```
 
-## 3. 使用 Wrangler CLI 初始化数据库
+## 3. 使用 Wrangler CLI 初始化数据库(可选)
 
 如果您是首次设置数据库，可以使用 Wrangler CLI 执行上述 SQL 语句：
 

@@ -1,6 +1,6 @@
 # 简易Cloudflare反代大陆无法直连的大模型API
 
-在Cloudflare Workers或Pages上部署，用于反代国内无法直接访问的大模型API。支持完全透传，不做任何修改。
+在Cloudflare Workers或Pages上部署，用于反代国内无法直接访问的大模型API。支持完全透传，不做任何修改。支持轮询API密钥，避免请求限制。
 
 ## 支持的服务提供商
 暂时支持gemini, openai, claude, groq, cerebras等大模型服务。
