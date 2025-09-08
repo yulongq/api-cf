@@ -1,9 +1,9 @@
 # 简易Cloudflare反代大陆无法直连的大模型API
 
-在Cloudflare Workers或Pages上部署，用于反代国内无法直接访问的大模型API。支持完全透传，不做任何修改。支持轮询API密钥，避免请求限制。
+在Cloudflare Workers或Pages上部署，用于反代大陆无法直接访问的大模型API。支持完全透传，不做任何修改。支持轮询API密钥，避免请求限制。
 
 ## 支持的服务提供商
-暂时支持gemini, openai, claude, groq, cerebras等大模型服务。
+暂时支持gemini, openai, claude, groq, cerebras大模型服务。
 
 ## 如何使用
 **基本使用方法：**
@@ -21,16 +21,16 @@
 **配置方法：**
 - 参考详细配置指南：[Analytics Engine 日志配置指南](ANALYTICS_ENGINE_SETUP.md)
 - 在Cloudflare仪表板创建Analytics Engine数据集
-- 在wrangler.toml中配置LOGS绑定
+- 在wrangler.toml或仪表板中配置LOGS绑定
 - 日志会自动记录服务商、模型、状态码、响应时间等信息
 
-### 2. D1数据库API密钥轮询功能
+### 2. API密钥轮询功能
 该功能可实现API密钥的自动轮询，有效避免单个密钥的请求限制问题。
 
 **配置方法：**
 - 参考详细配置指南：[轮询配置指南](ROTATION_SETUP.md)
 - 在Cloudflare仪表板创建D1数据库
-- 在wrangler.toml中配置DB绑定
+- 在wrangler.toml或仪表板中配置DB绑定
 - 创建rotation_state表用于存储轮询状态
 - 设置MASTER_KEY环境变量和各服务商的密钥列表
 
