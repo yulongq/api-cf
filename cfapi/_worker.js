@@ -117,16 +117,21 @@ async fetch(request, env, ctx) {
       
       // Attempt to extract model information without blocking main logic
       try {
-        if (request.method === 'POST') {
-          // Only clone request and parse body when model info needs to be logged
-          if (env.LOGS) {
+        // Only attempt to extract model info if LOGS is configured and it's a POST request
+        if (env.LOGS && request.method === 'POST') {
+          if (service === 'gemini') {
+            // For Gemini POST requests, extract model from URL path
+            // Expected format: https://{custom-url}/gemini/v1beta/models/{model-name}:{function-name}
+            if (pathSegments.length >= 4 && pathSegments[2] === 'models') {
+              // Split by colon to get model name without function suffix
+              requestData.model = pathSegments[3].split(':')[0] || 'unknown';
+            }
+          } else {
+            // For other services' POST requests, extract model from request body
             const clonedRequest = request.clone();
             const body = await clonedRequest.json().catch(() => ({}));
             requestData.model = body.model || 'unknown';
           }
-        } else if (service === 'gemini' && pathSegments[3]) {
-          // For Gemini GET requests, extract model from URL path
-          requestData.model = pathSegments[3].split(':')[0];
         }
       } catch (e) {
         // Ignore any data extraction errors and continue processing
