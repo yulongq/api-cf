@@ -7,7 +7,7 @@ name = "api-cf"
 main = "cfapi/_worker.js"
 
 # 兼容性日期，确保 Worker 运行时环境的稳定性
-compatibility_date = "YYYY-MM-DD"
+compatibility_date = "2024-01-01"
 
 # 指定这是一个 ES Module 格式的 Worker
 [build]
