@@ -4,7 +4,7 @@
 name = "api-cf"
 
 # 你的主脚本文件。现在需要包含从根目录开始的完整路径
-main = "cfapi/_worker.js" # <- 这是关键变更！
+main = "cfapi/_worker.js"
 
 # 兼容性日期，确保 Worker 运行时环境的稳定性
 compatibility_date = "YYYY-MM-DD"
